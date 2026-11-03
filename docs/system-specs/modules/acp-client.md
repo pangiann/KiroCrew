@@ -2258,7 +2258,10 @@ spec the same way kiro-cli v2 does where the wire allows it:
   request stated, or for a call the frame classified as a shell command, KAS's
   shell tool (`spec_hooks.post_tool_hook_tool_id`), with the call's trusted MCP server and tool name kept beside it, because KAS's `tool_call`
   frame names no built-in tool and titles the call in prose. Pinned through a real
-  `chat_runner._run_chat` turn by `test_kas_spec_hooks_turn_loop.py`.
+  `chat_runner._run_chat` turn by `test_kas_spec_hooks_turn_loop.py`. A command
+  longer than 4,096 characters does not run; a new session gets one `notice` row
+  naming the hook, its length, the limit and the script-file fix
+  (`test_kas_spec_hook_command_length.py`).
 
 For a derived worker, the projected payload carries both its checked specification
 snapshot and its runtime session key through create and load. Activation checks

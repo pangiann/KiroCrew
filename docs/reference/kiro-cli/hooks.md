@@ -5,7 +5,8 @@ Source: https://kiro.dev/docs/hooks/, plus its `types` and `actions` subpages
 documented as one page across every surface).
 
 > **Carries local additions.** Kiro Crew's fail-closed `PreToolUse` exit contract
-> has no upstream counterpart. A re-fetch must preserve it.
+> and its command-length limit have no upstream counterpart. A re-fetch must
+> preserve them.
 
 Execute custom commands, or inject an agent prompt, at specific points during
 agent lifecycle and tool execution.
@@ -113,6 +114,15 @@ gates a turn on tests or lint.
 ## Timeout
 
 Default 30s (30,000ms). Configure with `timeout_ms`.
+
+## Command length (Kiro Crew)
+
+An agent spec hook's `command` may be at most 4,096 characters. Kiro Crew does
+not run a spec hook whose command is longer, and logs a warning. Where Crew runs an agent's
+hooks itself (KAS, goose, opencode, strands), a new session also gets one
+notice naming the hook's event and matcher, the command's length and the limit.
+To run longer logic, put it in a script file and call that script from the
+hook, for example `"command": "~/.kiro/hooks/check.sh"`.
 
 ## Caching
 
