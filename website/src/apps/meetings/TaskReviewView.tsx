@@ -33,6 +33,8 @@ interface Props {
   transcriptFull: boolean
   provider: string
   filing: string | null
+  /** Every action item with a filing in flight; `filing` names only the latest. */
+  filingIds?: readonly string[]
   onBack: () => void
   onClose: () => void
   onFile: (taskId: string) => void
@@ -47,6 +49,7 @@ export default function TaskReviewView({
   transcriptFull,
   provider,
   filing,
+  filingIds = [],
   onBack,
   onClose,
   onFile,
@@ -57,6 +60,12 @@ export default function TaskReviewView({
   const archived = tasks.filter(task => task.review_status === 'archived')
   const filed = tasks.filter(task => task.review_status === 'pushed')
   const canClose = pending.length === 0
+  const inFlight = new Set(filingIds)
+  if (filing) inFlight.add(filing)
+  // Items being filed are left out, as their own Archive buttons are disabled. An
+  // archive that lands while a filing is in flight sticks when the filing fails,
+  // so an item the user chose to file is silently archived and the meeting can close.
+  const archivable = pending.filter(task => !inFlight.has(task.id))
 
   return (
     <div className="flex flex-col lg:flex-row h-full overflow-hidden">
@@ -74,7 +83,8 @@ export default function TaskReviewView({
           {pending.length > 0 && (
             <Btn
               className="ml-auto"
-              onClick={() => pending.forEach(task => onArchive(task.id))}
+              onClick={() => archivable.forEach(task => onArchive(task.id))}
+              disabled={archivable.length === 0}
             >
               <Archive className="lucide-inline" />
               {i18nT('apps.meetings.review.archiveAll')}
@@ -119,7 +129,7 @@ export default function TaskReviewView({
                     </div>
                     <Btn
                       onClick={() => onArchive(task.id)}
-                      disabled={filing === task.id}
+                      disabled={inFlight.has(task.id)}
                       aria-label={i18nT('apps.meetings.review.archive')}
                     >
                       <Archive className="lucide-inline" />
@@ -127,11 +137,11 @@ export default function TaskReviewView({
                     </Btn>
                     <SendBtn
                       onClick={() => onFile(task.id)}
-                      disabled={filing === task.id}
+                      disabled={inFlight.has(task.id)}
                       aria-label={i18nT('apps.meetings.review.file')}
                     >
                       <Send className="lucide-inline" />
-                      {filing === task.id
+                      {inFlight.has(task.id)
                         ? i18nT('apps.meetings.review.filing')
                         : i18nT('apps.meetings.review.file')}
                     </SendBtn>
