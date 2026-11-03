@@ -11,7 +11,8 @@ import {
 } from '../ui/dropdown-menu'
 import { i18nT } from '../../i18n/t'
 import { fmtNumber } from '../../i18n/format'
-import { useLocalCrewHidden } from '../overlayRoot'
+import { OverlayPortal, useLocalCrewHidden } from '../overlayRoot'
+import { useDialogFocusTrap } from '../../hooks/useDialogFocusTrap'
 import { overlayCaptionClearancePx } from '../../lib/electron'
 import { ReactReduxContext } from 'react-redux'
 import { setActiveId } from '../../store/instancesSlice'
@@ -158,6 +159,17 @@ export function dispatchLightbox(target: HTMLImageElement): void {
   }
   window.dispatchEvent(new CustomEvent('lightbox', { detail }))
 }
+
+/** The viewer's keyboard focus while it is open, from the shared dialog trap:
+ *  focus moves in on open (the viewer can open from inside another trap, the
+ *  full-screen artifact panel), Tab stays within its controls, and focus goes
+ *  back on close. Mounted only while open, so open and close are its mount and
+ *  unmount. The viewer keeps its own Escape (`handleEscape: false`). */
+function LightboxFocusTrap({ containerRef }: { containerRef: React.RefObject<HTMLElement | null> }) {
+  useDialogFocusTrap(containerRef, noop, { handleEscape: false })
+  return null
+}
+const noop = () => {}
 
 /** Lightbox overlay -- mount once in the app, listens for 'lightbox' custom
  *  events. Escape closes; ArrowLeft/ArrowRight navigate within the image set
@@ -690,7 +702,11 @@ export function Lightbox() {
     : swipeY !== 0
       ? `translateY(${swipeY.toFixed(1)}px) scale(${(1 - swipeProgress * 0.15).toFixed(3)})`
       : undefined
+  // Portalled when it opens, so it lands after whatever z-[9999] layer opened it
+  // (an artifact panel's full screen, #28760) and paints over it at equal
+  // z-index, while a palette or menu opened later still paints over the viewer.
   return (
+    <OverlayPortal>
     <Clickable
       ref={overlayRef}
       className={`fixed inset-0 z-[9999] bg-black/80 flex items-center justify-center overflow-hidden cursor-pointer touch-none ${swiping ? '' : 'transition-colors duration-200'}`}
@@ -703,6 +719,7 @@ export function Lightbox() {
       onPointerUp={onOverlayPointerUp}
       onPointerCancel={onOverlayPointerCancel}
     >
+      <LightboxFocusTrap containerRef={overlayRef} />
       {/* Inner wrapper centres the image; when enlarged, the image is dragged
           around via a translate transform (see pointer handlers) rather than
           scrollbars — a flex-centred overflow container can't scroll to its
@@ -844,7 +861,15 @@ export function Lightbox() {
                   : <MoreHorizontal className="lucide-inline" aria-hidden="true" />}
               </button>
             </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="min-w-[180px]">
+            <DropdownMenuContent
+              align="end"
+              className="min-w-[180px]"
+              // Radix closes the menu on Escape with preventDefault only, so the
+              // key still bubbles to a host handler that ignores defaultPrevented
+              // (the artifact panel) and closes the artifact behind the viewer.
+              // Consume it, as the viewer's own Escape does (#20630).
+              onEscapeKeyDown={e => e.stopPropagation()}
+            >
               <DropdownMenuItem
                 data-testid="lightbox-copy-image"
                 aria-label={copyLabel}
@@ -953,5 +978,6 @@ export function Lightbox() {
         </div>
       )}
     </Clickable>
+    </OverlayPortal>
   )
 }
