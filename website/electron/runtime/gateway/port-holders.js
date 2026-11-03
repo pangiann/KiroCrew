@@ -19,6 +19,28 @@ const {
 
 const LSOF_CANDIDATES = ["/usr/sbin/lsof", "/usr/bin/lsof"];
 
+// The address the gateway binds unless its operator widens it. The check stays
+// on loopback: a listener on a non-loopback address makes Windows Firewall ask
+// the user to allow the app, and on Windows a wildcard holder does not block a
+// loopback bind, so loopback answers the question the respawn will ask.
+const GATEWAY_BIND_HOST = "127.0.0.1";
+
+/**
+ * Whether a listener could bind `port` on the gateway's loopback address right
+ * now. The probe listener is closed at once. Any bind error counts as "held".
+ *
+ * @param {number} port
+ * @param {{ net?: typeof import("node:net") }} [deps]
+ * @returns {Promise<boolean>}
+ */
+function portBindable(port, { net = require("node:net") } = {}) {
+  return new Promise((resolve) => {
+    const server = net.createServer();
+    server.once("error", () => resolve(false));
+    server.listen({ port, host: GATEWAY_BIND_HOST, exclusive: true }, () => server.close(() => resolve(true)));
+  });
+}
+
 /**
  * Every descendant of `rootPid`, deepest first, from a `ps -A -o pid=,ppid=`
  * table. `rootPid` itself is not included.
@@ -72,6 +94,8 @@ function descendantPids(rootPid, psTable) {
  * @param {object} deps
  * @param {() => string[]} deps.getSpawnedExecutablePaths  executables the
  *        CURRENT child was spawned from, read at call time.
+ * @param {(port:number) => Promise<boolean>} [deps.isPortBindable]  Windows
+ *        force-stop's bind check for an empty netstat answer.
  */
 function createPortHolders({
   fs,
@@ -83,6 +107,7 @@ function createPortHolders({
   isWindows: IS_WIN,
   log: glog,
   getSpawnedExecutablePaths,
+  isPortBindable = portBindable,
 }) {
   const windowsRealpath = (candidate) => fs.realpathSync.native(candidate);
 
@@ -257,6 +282,9 @@ function createPortHolders({
         sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
         isKirocrew: isTrustedWindowsGatewayCommand,
         failClosedOnProbeError: true,
+        // netstat can leave a held port out of its table, so "no owner" is
+        // checked with a real bind before recovery respawns into the port.
+        confirmFree: (p) => isPortBindable(p),
         log: glog,
       });
     }
@@ -286,4 +314,4 @@ function createPortHolders({
   };
 }
 
-module.exports = { createPortHolders, descendantPids };
+module.exports = { createPortHolders, descendantPids, portBindable };

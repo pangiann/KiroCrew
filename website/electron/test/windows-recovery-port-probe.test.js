@@ -15,15 +15,19 @@ const assert = require("node:assert");
 const { createPortHolders } = require("../runtime/gateway/port-holders");
 const { windowsListenPidsRetrying } = require("../windows-port");
 
-function windowsHolders(execFileFn) {
+// The netstat-retry cases below run on the gateway's real port number, so they
+// take a bind check that answers "free" rather than binding that port on the
+// test host. The empty-owner cases pass the real check against a real socket.
+function windowsHolders(execFileFn, { isPortBindable = async () => true, log = () => {} } = {}) {
   return createPortHolders({
     fs, os, path,
     execFile: execFileFn,
     processObj: { resourcesPath: "", env: {} },
     dirname: "/virtual/electron",
     isWindows: true,
-    log: () => {},
+    log,
     getSpawnedExecutablePaths: () => [],
+    isPortBindable,
   });
 }
 
@@ -105,4 +109,137 @@ test("windowsListenPidsRetrying returns the first successful answer", async () =
   });
   assert.deepStrictEqual(pids, [4242]);
   assert.strictEqual(calls, 2);
+});
+
+// --- An empty netstat answer is checked with a real bind ---------------------
+//
+// netstat can leave a held port out of its table: no row at all, a LISTENING row
+// whose foreign endpoint is not the wildcard, or a row with pid 0. Each parses to
+// "no owner". Recovery must not read that as "free" while a bind is refused.
+
+const net = require("node:net");
+const { portBindable } = require("../runtime/gateway/port-holders");
+
+function listenOn(host) {
+  return new Promise((resolve, reject) => {
+    const server = net.createServer();
+    server.once("error", reject);
+    server.listen({ port: 0, host }, () => resolve(server));
+  });
+}
+
+function closeServer(server) {
+  return new Promise((resolve) => server.close(() => resolve()));
+}
+
+function bindRefused(port, host) {
+  return new Promise((resolve) => {
+    const probe = net.createServer();
+    probe.once("error", (e) => resolve(e.code === "EADDRINUSE"));
+    probe.listen({ port, host, exclusive: true }, () => probe.close(() => resolve(false)));
+  });
+}
+
+const UNLISTED_SHAPES = {
+  "no row for the port": () => "",
+  "a LISTENING row with a non-wildcard foreign endpoint": (port) =>
+    `  TCP    127.0.0.1:${port}         127.0.0.1:0            LISTENING       4242\r\n`,
+  "a LISTENING row with pid 0": (port) =>
+    `  TCP    0.0.0.0:${port}           0.0.0.0:0              LISTENING       0\r\n`,
+};
+
+for (const [shape, row] of Object.entries(UNLISTED_SHAPES)) {
+  test(`Windows recovery does not call a held loopback port free when netstat shows ${shape}`, async () => {
+    const held = await listenOn("127.0.0.1");
+    const port = held.address().port;
+    try {
+      const logs = [];
+      const { execFileFn } = scriptedNetstat([row(port)]);
+      const result = await windowsHolders(execFileFn, { isPortBindable: portBindable, log: (l) => logs.push(l) })
+        .forceStopGatewayPort(port);
+      assert.strictEqual(await bindRefused(port, "127.0.0.1"), true, "the port really is held");
+      assert.strictEqual(result.freed, false);
+      assert.strictEqual(result.ownerUnknown, true);
+      assert.strictEqual(result.killed, 0);
+      assert.ok(logs.some((l) => l.includes(`no LISTEN owner found on :${port} but a bind is refused`)), logs.join("\n"));
+    } finally {
+      await closeServer(held);
+    }
+  });
+}
+
+// The re-probe after a kill, or after skipping a foreign holder, can drop the
+// row too. Both end on the same bind check as an empty first probe.
+const { forceStopPort } = require("../gateway-stop");
+
+function scriptedForceStop({ command, confirms }) {
+  const answers = [[4242], []];
+  const checks = [];
+  return {
+    checks,
+    run: () => forceStopPort(5476, {
+      getListenPids: async () => answers.shift() ?? [],
+      getCommand: async () => command,
+      kill: async () => {},
+      sleep: async () => {},
+      isKirocrew: (cmd) => cmd === "kirocrew gateway --port 5476",
+      failClosedOnProbeError: true,
+      confirmFree: async (port) => { checks.push(port); return confirms; },
+    }),
+  };
+}
+
+for (const [label, command] of [
+  ["after killing our own gateway", "kirocrew gateway --port 5476"],
+  ["after skipping a foreign holder", "ssh -L 5476:localhost:5476 build-host"],
+]) {
+  test(`an empty re-probe ${label} is checked with a bind before it reads as free`, async () => {
+    const refused = scriptedForceStop({ command, confirms: false });
+    const held = await refused.run();
+    assert.deepStrictEqual(refused.checks, [5476]);
+    assert.strictEqual(held.freed, false);
+    assert.strictEqual(held.ownerUnknown, true);
+
+    const bindable = scriptedForceStop({ command, confirms: true });
+    const free = await bindable.run();
+    assert.deepStrictEqual(bindable.checks, [5476]);
+    assert.strictEqual(free.freed, true);
+    assert.ok(!free.ownerUnknown);
+  });
+}
+
+test("a port still listed after the kill is not bind-checked", async () => {
+  const checks = [];
+  const result = await forceStopPort(5476, {
+    getListenPids: async () => [4242],
+    getCommand: async () => "ssh -L 5476:localhost:5476 build-host",
+    kill: async () => {},
+    sleep: async () => {},
+    confirmFree: async (port) => { checks.push(port); return true; },
+  });
+  assert.deepStrictEqual(checks, [], "a listed owner already answers the question");
+  assert.strictEqual(result.freed, false);
+  assert.strictEqual(result.foreignHolder, true);
+});
+
+test("Windows recovery still calls a genuinely free port free, with no kill", async () => {
+  const probe = await listenOn("127.0.0.1");
+  const port = probe.address().port;
+  await closeServer(probe);
+  const { calls, execFileFn } = scriptedNetstat([""]);
+  const result = await windowsHolders(execFileFn, { isPortBindable: portBindable }).forceStopGatewayPort(port);
+  assert.strictEqual(calls.length, 1);
+  assert.strictEqual(result.freed, true);
+  assert.strictEqual(result.killed, 0);
+  assert.ok(!result.ownerUnknown);
+  assert.strictEqual(await bindRefused(port, "127.0.0.1"), false, "the bind check released the port");
+});
+
+test("Windows recovery fails closed when the bind check itself throws", async () => {
+  const { execFileFn } = scriptedNetstat([""]);
+  const result = await windowsHolders(execFileFn, {
+    isPortBindable: async () => { throw new Error("socket table unavailable"); },
+  }).forceStopGatewayPort(5476);
+  assert.strictEqual(result.freed, false);
+  assert.strictEqual(result.ownerUnknown, true);
 });

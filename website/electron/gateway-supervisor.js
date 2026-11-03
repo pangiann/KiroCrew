@@ -1089,8 +1089,9 @@ function createGatewaySupervisor({
     let freed = true;
     let foreignHolder = false;
     let probeFailed = false;
+    let ownerUnknown = false;
     try {
-      ({ freed, foreignHolder, probeFailed = false } = await forceStopGatewayPort(PORT));
+      ({ freed, foreignHolder, probeFailed = false, ownerUnknown = false } = await forceStopGatewayPort(PORT));
     } catch (error) {
       // POSIX lsof may be unavailable. Let bind arbitrate, but record that the
       // pre-spawn ownership proof could not be completed.
@@ -1100,9 +1101,11 @@ function createGatewaySupervisor({
     if (!freed) {
       const reason = probeFailed
         ? "probe failed"
-        : (foreignHolder ? "foreign holder" : "unkillable wedge");
+        : ownerUnknown
+          ? "held by an unlisted owner"
+          : (foreignHolder ? "foreign holder" : "unkillable wedge");
       glog(`liveness: port not confirmed free after force-stop (${reason}); surfacing restart-required`);
-      return showUnrecoverableGatewayError(window, PORT, { probeFailed });
+      return showUnrecoverableGatewayError(window, PORT, { probeFailed: probeFailed || ownerUnknown });
     }
     gatewayStartFailure = null;
     await startGateway();
@@ -1508,14 +1511,16 @@ function createGatewaySupervisor({
         if (action === "force-retry") {
           let freed = true;
           let probeFailed = false;
+          let ownerUnknown = false;
           try {
-            ({ freed, probeFailed = false } = await forceStopGatewayPort(PORT));
+            ({ freed, probeFailed = false, ownerUnknown = false } = await forceStopGatewayPort(PORT));
           } catch (probeError) {
             glog(`force-stop: port probe failed (${probeError && probeError.message}); letting retry's bind confirm`);
           }
           if (window.isDestroyed()) return;
           if (!freed) {
-            return showUnrecoverableGatewayError(window, PORT, { probeFailed });
+            // An owner netstat does not list is as unverifiable as a failed probe.
+            return showUnrecoverableGatewayError(window, PORT, { probeFailed: probeFailed || ownerUnknown });
           }
         }
         if (
