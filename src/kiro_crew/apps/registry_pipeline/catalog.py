@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import platform as _platform
+import re
 import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
@@ -55,6 +56,7 @@ from kiro_crew.apps.registry_pipeline.sources import (
 )
 from kiro_crew.apps.registry_pipeline.store_art import _prewarm_owner_tier_store_assets
 from kiro_crew.apps.registry_pipeline.subprocess_env import _detect_probe_env
+from kiro_crew.apps.version import parse_version as _parse_version
 from kiro_crew.sandbox import (
     create_subprocess_limited,
     sandboxed_spawn_argv,
@@ -398,26 +400,34 @@ def _trust_repository_bindings(
     return bindings
 
 
+#: A whole version string: an optional ``v``, a numeric release, then an optional
+#: pre-release (``-beta.1``, ``-1``, or ``rc3`` with no separator) and build
+#: metadata. Anything else (``1.0.0 <b>``, ``latest``) is not a version, so it
+#: never reads as newer.
+_VERSION_STRING_RE = re.compile(
+    r"v?\d+(?:\.\d+)*(?:-[0-9A-Za-z][0-9A-Za-z.-]*|\.?[A-Za-z][0-9A-Za-z.-]*)?(?:\+[0-9A-Za-z.-]+)?"
+)
+
+
 def _version_newer(registry_ver: str, installed_ver: str) -> bool:
     """Return True if registry version is strictly newer than installed.
 
-    Compares semver-style version strings (major.minor.patch).
-    Pre-release suffixes (e.g. ``-beta.1``) and build metadata
-    (e.g. ``+build.123``) are stripped before comparison.
-    Falls back to False if parsing fails (conservative).
+    Compares the numeric release (major.minor.patch) through
+    :func:`kiro_crew.apps.version.parse_version`, the parser every other version
+    check uses, so a PEP 440 suffix with no separator (``0.4.0rc3``) and a leading
+    ``v`` are read like ``-beta.1`` and ``+build``. Falls back to False when either
+    side is not a whole version string (conservative).
     """
-
-    def _parse(v: str) -> tuple[int, ...]:
-        # Strip pre-release and build metadata: "1.2.3-beta.1+build" → "1.2.3"
-        base = v.split("-", 1)[0].split("+", 1)[0]
-        parts = [int(x) for x in base.split(".")[:3]]
-        while len(parts) < 3:
-            parts.append(0)
-        return tuple(parts)
-
+    if not (isinstance(registry_ver, str) and isinstance(installed_ver, str)):
+        return False
+    registry_ver, installed_ver = registry_ver.strip(), installed_ver.strip()
+    if not (
+        _VERSION_STRING_RE.fullmatch(registry_ver) and _VERSION_STRING_RE.fullmatch(installed_ver)
+    ):
+        return False
     try:
-        return _parse(registry_ver) > _parse(installed_ver)
-    except (ValueError, AttributeError):
+        return _parse_version(registry_ver) > _parse_version(installed_ver)
+    except ValueError:
         return False  # Conservative: don't flag update on parse failure
 
 

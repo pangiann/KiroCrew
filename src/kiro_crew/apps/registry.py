@@ -618,6 +618,7 @@ if _typing.TYPE_CHECKING:
         time,
     )
     from kiro_crew.apps.registry_pipeline.catalog import (  # noqa: F401
+        _VERSION_STRING_RE,
         FIRST_PARTY_AUTHORS,
         SOURCE_REGISTRY_PREFIX,
         _append_external_registry_apps,
@@ -633,6 +634,7 @@ if _typing.TYPE_CHECKING:
         _identity,
         _is_catalog_row,
         _is_external_row,
+        _parse_version,
         _pinned_registry_entry,
         _platform,
         _registry_app_candidates,
