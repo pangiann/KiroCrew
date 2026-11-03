@@ -96,6 +96,27 @@ export function liveCrewWorkers(slots: readonly LiveCrewWorkerRow[], root: strin
   }))
 }
 
+/** A crewmate (mate) thread's OPEN sessions from the slot store, shaped as
+ *  worker-list rows: those stamped `mate_root` for it, at any depth, as
+ *  `liveCrewWorkers` reads `crew_root`. Birth attribution (`created_by`) alone does
+ *  not count: an adopted or released session keeps it but is no longer the mate's.
+ *  The mate's Sessions tab merges them with `GET .../crew-workers` like the Crew
+ *  tab does. */
+export function liveMateWorkers(slots: readonly (LiveCrewWorkerRow & { mate_root?: string })[], root: string): CrewWorker[] {
+  if (!root) return []
+  return slots.filter(s => s.mate_root === root && !s.peer_id && s.key !== root).map(s => ({
+    key: s.key,
+    title: s.title || '',
+    agent: s.agent || '',
+    status: s.pending_approval ? 'needs_approval' : s.running ? 'working' : s.needs_input ? 'asking' : 'idle',
+    group: crewWorkerGroupOfRow(s),
+    last_activity: s.last_turn_ts || '',
+    ledger_item: '',
+    created_by: s.created_by || root,
+    dispatched_by: s.created_by || root,
+  }))
+}
+
 /** The worker list as shown: the route's rows (which win where both name a key,
  *  since they carry more), then every open live worker the route did not name
  *  -- the whole list while the route has not answered or is not served. */

@@ -269,6 +269,10 @@ export interface ChatSlot extends TurnIdentityFields {
    *  worker): that root's key. The person's session list leaves such a row out;
    *  the side panel lists it under its root. Absent on every other row. */
   crew_root?: string
+  /** On a session a crewmate (mate) thread dispatched, directly or through another
+   *  session: that mate thread's key (`crew_mode.MATE_ROOT_FIELD`). The mate's
+   *  Sessions tab lists such rows. Absent on every other row. */
+  mate_root?: string
   /** The conductor the chat runs in Crew Mode (`crew_mode_agent` on the slot), "" when
    *  it never turned on: it marks the chat as Crew Mode until the gateway moves it onto
    *  the configured `agent.crew_mode_agent`. */
@@ -730,6 +734,37 @@ export interface CrewWorker {
   /** Its direct dispatcher by the lineage the server walks (the parent edge,
    *  `created_by`, the saved creator): the root, a sub-conductor's key, or "". */
   dispatched_by?: string
+}
+
+/** One session's recap from records only, no model call
+ *  (`GET /api/chat/slots/{root}/crew-workers/{worker}/recap`). Every text field is
+ *  "" when the record holds none. */
+export interface CrewWorkerRecap {
+  key: string
+  root: string
+  /** The work item's title, else the session's own title. */
+  title: string
+  ledger_item: string
+  /** The worker's latest report: `progress`, `done`, `blocked`, `question`, or "". */
+  status: string
+  /** Why a `blocked` / `question` report waits: `approval`, `needs_human`, or "". */
+  reason: string
+  /** The item's state: `open`, `accepted`, `rejected`, `abandoned`, or "". */
+  state: string
+  /** The latest report's summary. */
+  summary: string
+  /** The conductor's decision on the item. */
+  decision: string
+  pr: number | null
+  /** An `https://github.com/.../pull/N` link, or "". */
+  pr_url: string
+  artifacts: Record<string, string>
+  /** ISO time of the last report, else of the session's last finished turn. */
+  last_update: string
+  open_approvals: number
+  approvals: { tool: string; requested_at: string }[]
+  open_questions: number
+  live: boolean
 }
 
 /** One bar on a Crew Mode timeline lane, from recorded transcript rows only. */
