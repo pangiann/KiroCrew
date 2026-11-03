@@ -19,6 +19,7 @@ import {
   api,
   ApiError,
   type AgentImportApplyRequest,
+  type AgentImportApplyResponse,
   type AgentImportConflictStrategy,
   type AgentImportSource,
 } from '../api/client'
@@ -106,6 +107,31 @@ function eligibleSources(sources: AgentImportSource[]): AgentImportSource[] {
   )
 }
 
+/** A scan skip reason in the reader's language. The scan reports one of
+ *  dozens of backend codes (`onboarding_scan.py` and the source readers), so
+ *  each is read by its kind, not listed one by one: the code stays on the
+ *  row's `data-reason` for support, and an unknown code still reads as a
+ *  plain "skipped" rather than as the raw identifier. */
+export function skipReasonText(reason: string): string {
+  // Only a code is translated: a reason already written as prose (a gateway
+  // that sends a sentence) is shown as it came.
+  if (!/^[a-z0-9]+(_[a-z0-9]+)*$/.test(reason)) return reason
+  if (reason === 'source_unreadable' || /(^read_failed|_read_failed|_open_failed|^unknown_source)$/.test(reason)) {
+    return i18nT('components.agentImportFlow.files_could_not_be_read')
+  }
+  if (/credential|secret/.test(reason)) return i18nT('components.agentImportFlow.skip_reason_credentials')
+  if (/(_limit|_too_large|_too_long|_truncated)$/.test(reason)) return i18nT('components.agentImportFlow.skip_reason_too_large')
+  // Before the unsupported check: `workspace_unavailable` is a bad workspace,
+  // not a missing feature.
+  if (/^invalid_|^timezone_required$|^ambiguous_|^workspace_|^unstable_|^empty_/.test(reason)) {
+    return i18nT('components.agentImportFlow.skip_reason_invalid')
+  }
+  if (/^unsupported_|_unsupported$|_unavailable$/.test(reason)) return i18nT('components.agentImportFlow.skip_reason_unsupported')
+  if (/_excluded$/.test(reason)) return i18nT('components.agentImportFlow.skip_reason_excluded')
+  if (/_rejected$|^outside_source_root$/.test(reason)) return i18nT('components.agentImportFlow.skip_reason_path_rejected')
+  return i18nT('components.agentImportFlow.skip_reason_other')
+}
+
 function errorMessage(error: unknown, fallback: string): string {
   // The shared transport has already replaced an auth-expired denial with its
   // actionable, localized sign-in instructions. Preserve that message before
@@ -181,6 +207,11 @@ export default function AgentImportFlow({
 }) {
   const [open, setOpen] = useState(initialOpen)
   const [stage, setStage] = useState<Stage>(1)
+  // The last import that landed. A conflict resolution re-runs the apply, and
+  // a new run clears the mutation's own result while it is in flight and keeps
+  // none after a failure; the results screen reads this so its counts and its
+  // resolution buttons stay put across a re-apply, whatever that one does.
+  const [lastApplied, setLastApplied] = useState<AgentImportApplyResponse | null>(null)
   const [scanGeneration, setScanGeneration] = useState(0)
   const [selectedSources, setSelectedSources] = useState<Set<string>>(new Set())
   const [strategy, setStrategy] = useState<AgentImportConflictStrategy>('skip')
@@ -230,6 +261,7 @@ export default function AgentImportFlow({
   )
 
   const resetFlow = (refresh: boolean) => {
+    setLastApplied(null)
     setStage(1)
     setSelectedSources(new Set())
     setSelectedCategories({})
@@ -263,7 +295,10 @@ export default function AgentImportFlow({
       api.onboardingImportApply(
         override ? { ...applyPayload, conflict_strategy: override } : applyPayload,
       ),
-    onSuccess: () => setStage(4),
+    onSuccess: (data) => {
+      setLastApplied(data)
+      setStage(4)
+    },
   })
   const completionMutation = useMutation({
     mutationFn: () => api.onboardingImportState({ completed: true }),
@@ -513,12 +548,15 @@ export default function AgentImportFlow({
     }
     return (
       <>
-        <Btn type="button" className="h-9 rounded-lg px-4" disabled={completionMutation.isPending} onClick={importAnother}>
+        {/* Held while ANY request runs, a conflict resolution included: Import
+            another resets the flow under a running import, and Continue would
+            close it before that import's result or remaining conflict shows. */}
+        <Btn type="button" className="h-9 rounded-lg px-4" disabled={isBusy} onClick={importAnother}>
           <RefreshCw className="lucide-inline" /> {i18nT('components.agentImportFlow.import_another')}
         </Btn>
         <SendBtn
           type="button"
-          disabled={completionMutation.isPending}
+          disabled={isBusy}
           onClick={() => completionMutation.mutate()}
         >
           {completionMutation.isPending && <Loader2 className="lucide-inline animate-spin" />}
@@ -561,7 +599,7 @@ export default function AgentImportFlow({
       4: {
         title: i18nT('components.agentImportFlow.import_complete'),
         // "Ready" would contradict the notice when the agent spec did not follow.
-        description: agentSpecNotRewritten(applyMutation.data)
+        description: agentSpecNotRewritten(applyMutation.data ?? lastApplied)
           ? ''
           : i18nT('components.agentImportFlow.your_selected_setup_is_ready_in_kiro_crew'),
       },
@@ -886,10 +924,8 @@ export default function AgentImportFlow({
                       <p className="text-[13px] font-medium text-text">
                         {item.category ? `${item.source}: ${item.category}` : item.source}
                       </p>
-                      <p className="mt-1 text-[13px] text-muted">
-                        {item.reason === 'source_unreadable'
-                          ? i18nT('components.agentImportFlow.files_could_not_be_read')
-                          : item.reason}
+                      <p className="mt-1 text-[13px] text-muted" data-reason={item.reason}>
+                        {skipReasonText(item.reason)}
                       </p>
                     </div>
                     {item.count !== undefined && <span className="font-mono text-[13px] text-muted">{item.count}</span>}
@@ -902,9 +938,21 @@ export default function AgentImportFlow({
       )
     }
 
-    const summary = applyMutation.data?.summary
+    const applied = applyMutation.data ?? lastApplied
+    const summary = applied?.summary
     return (
       <>
+        {/* No hand-off: a resolution is one press of Keep both or Replace
+            mine with nothing typed, so trying again is the same press. A
+            failed resolution leaves the import before it standing, so its
+            counts and buttons stay below. */}
+        {applyMutation.isError && (
+          <ErrorNotice
+            testId="agent-import-resolve-error"
+            className="mb-4"
+            message={errorMessage(applyMutation.error, i18nT('components.agentImportFlow.the_import_did_not_finish_please_try_again'))}
+          />
+        )}
         <dl className="grid grid-cols-1 divide-y divide-border rounded-xl border border-border bg-bg sm:grid-cols-3 sm:divide-x sm:divide-y-0">
           <div className="p-4 text-center">
             <dt className="text-[13px] text-muted">{i18nT('components.agentImportFlow.imported')}</dt>
@@ -919,7 +967,7 @@ export default function AgentImportFlow({
             <dd className="mt-1 text-2xl font-semibold text-text-strong">{summary?.skipped ?? 0}</dd>
           </div>
         </dl>
-        {agentSpecNotRewritten(applyMutation.data) && <AgentSpecNotRewrittenNotice className="mt-4" />}
+        {agentSpecNotRewritten(applied) && <AgentSpecNotRewrittenNotice className="mt-4" />}
         {!!summary?.resolvable_conflicts && (
           <div
             className="mt-5 rounded-lg border border-warn/30 bg-warn/10 p-3 text-sm"

@@ -7,7 +7,7 @@ import type {
 } from '../api/client'
 import { api, ApiError } from '../api/client'
 import { renderWithProviders } from '../test/helpers'
-import AgentImportFlow from './AgentImportFlow'
+import AgentImportFlow, { skipReasonText } from './AgentImportFlow'
 import { i18next } from '../i18n/all'
 import { LocalOverlayRoot } from './overlayRoot'
 
@@ -745,6 +745,77 @@ describe('AgentImportFlow', () => {
         ([body]) => body?.conflict_strategy === 'skip',
       ),
     ).toHaveLength(1)
+  })
+
+  it('keeps the results and the resolution after a failed conflict resolution, and says it failed', async () => {
+    mockSuccessfulRequests()
+    vi.mocked(api.onboardingImportApply)
+      .mockResolvedValueOnce(CONFLICTED_APPLY_RESPONSE)
+      .mockRejectedValueOnce(new Error('Import service unavailable'))
+    renderWithProviders(<AgentImportFlow initialOpen onComplete={vi.fn()} />)
+    await startImport()
+    await screen.findByText('2 items already exist with different content.')
+
+    await userEvent.click(screen.getByRole('button', { name: 'Keep both' }))
+
+    expect(await screen.findByTestId('agent-import-resolve-error')).toHaveTextContent('Import service unavailable')
+    // The import before the failed resolution stands: its counts and both ways
+    // out are still on screen, so the person can try again.
+    expect(screen.getByText('2 items already exist with different content.')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Keep both' })).not.toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Replace mine' })).not.toBeDisabled()
+  })
+
+  it('holds Import another and Continue while a conflict resolution runs', async () => {
+    let resolveRetry: ((value: AgentImportApplyResponse) => void) | undefined
+    mockSuccessfulRequests()
+    vi.mocked(api.onboardingImportApply)
+      .mockResolvedValueOnce(CONFLICTED_APPLY_RESPONSE)
+      .mockReturnValueOnce(new Promise(resolve => { resolveRetry = resolve }))
+    renderWithProviders(<AgentImportFlow initialOpen onComplete={vi.fn()} />)
+    await startImport()
+    await screen.findByText('2 items already exist with different content.')
+
+    await userEvent.click(screen.getByRole('button', { name: 'Replace mine' }))
+
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Import another' })).toBeDisabled())
+    expect(screen.getByRole('button', { name: 'Continue' })).toBeDisabled()
+    // The counts stay while it runs, rather than dropping to zero.
+    expect(screen.getByText('2 items already exist with different content.')).toBeInTheDocument()
+
+    resolveRetry?.(APPLY_RESPONSE)
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Continue' })).not.toBeDisabled())
+    expect(screen.getByText('10')).toBeInTheDocument()
+  })
+
+  it('names each skip reason in words, and keeps a prose reason as sent', async () => {
+    mockSuccessfulRequests({
+      ...SCAN_RESPONSE,
+      skipped: [
+        { source: 'Claude Code', category: 'Memories', reason: 'row_count_limit', count: 3 },
+        { source: 'Claude Code', category: 'Schedules', reason: 'unsupported_schedule_schema' },
+        { source: 'Claude Code', category: 'MCP servers', reason: 'credential_bearing_server' },
+        { source: 'Claude Code', category: 'Skills', reason: 'a_code_no_one_knows_yet' },
+        { source: 'Claude Code', category: 'Credentials', reason: 'Secrets are never imported' },
+      ],
+    })
+    renderWithProviders(<AgentImportFlow initialOpen onComplete={vi.fn()} />)
+    await goToReview()
+
+    expect(screen.getByText('Over a size or count limit')).toHaveAttribute('data-reason', 'row_count_limit')
+    expect(screen.getByText('Not supported yet')).toHaveAttribute('data-reason', 'unsupported_schedule_schema')
+    expect(screen.getByText('Holds credentials, so it stays with its source')).toHaveAttribute('data-reason', 'credential_bearing_server')
+    expect(screen.getByText('Skipped')).toHaveAttribute('data-reason', 'a_code_no_one_knows_yet')
+    expect(screen.getByText('Secrets are never imported')).toBeInTheDocument()
+    expect(screen.queryByText('row_count_limit')).toBeNull()
+  })
+
+  it('reads a skip code by its kind, not by a suffix another kind shares', () => {
+    // An unreachable workspace is a bad setting, not a missing feature.
+    expect(skipReasonText('workspace_unavailable')).toBe('Could not be read as valid settings')
+    expect(skipReasonText('workspace_path_too_long')).toBe('Over a size or count limit')
+    expect(skipReasonText('scoped_memory_unsupported')).toBe('Not supported yet')
+    expect(skipReasonText('source_workspace_excluded')).toBe('Left out on purpose')
   })
 
   it('shows no conflict resolution when nothing conflicted', async () => {
