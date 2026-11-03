@@ -288,7 +288,9 @@ def _handle_workspace(args: argparse.Namespace) -> None:
                 sys.exit(1)
 
             ws_dir = args.dir if args.dir is not None else f"workspace-{args.name}"
-            src_path = config_dir() / cfg.workspaces[copy_from].dir
+            # Composed like a destination (``~`` expanded), so a tilde-stored
+            # source is read where it lives rather than under ``<home>/~``.
+            src_path = _ws_dir_composed(str(cfg.workspaces[copy_from].dir))
             # Validated and composed in one step (refuses and exits on a dir
             # outside the data home): the install and the fallback mkdir below
             # both land on this path, the one the containment check judged.
@@ -327,6 +329,17 @@ def _handle_workspace(args: argparse.Namespace) -> None:
                     file=sys.stderr,
                 )
                 sys.exit(1)
+            if not src_path.is_dir():
+                # Read here, not at module level: the facade's import inventory is frozen.
+                from kiro_crew.terminal_safe import safe_terminal_line
+
+                # Created as before, but empty: say so, since the caller asked for a copy.
+                print(
+                    f"Warning: source workspace '{copy_from}' has no folder at "
+                    f"'{safe_terminal_line(str(cfg.workspaces[copy_from].dir))}'; "
+                    "nothing was copied",
+                    file=sys.stderr,
+                )
             if src_path.is_dir():
 
                 def _ignore_sensitive(directory: str, entries: list[str]) -> set[str]:
