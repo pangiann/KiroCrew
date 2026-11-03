@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import os
-import re
+import unicodedata
 import uuid
 import zipfile
 from pathlib import Path
@@ -59,6 +59,21 @@ def _fit_stored_name(safe_name: str) -> str:
     budget = max(limit - len(ext.encode("utf-8")), 1)
     stem = path.stem.encode("utf-8")[:budget].decode("utf-8", errors="ignore")
     return f"{stem}{ext}"
+
+
+def _safe_upload_name(name: str) -> str:
+    """*name* with every character outside letters, digits, ``_``, ``.``, ``-`` and
+    combining marks replaced by ``_``.
+
+    Normalized to NFC first, so a macOS ``é`` sent as ``e`` plus an accent is one
+    letter. A mark that has no composed form (an Indic vowel sign, say) is kept:
+    ``\\w`` does not match combining marks, and replacing them broke the word.
+    """
+    name = unicodedata.normalize("NFC", name)
+    return "".join(
+        ch if ch in "_.-" or ch.isalnum() or unicodedata.category(ch).startswith("M") else "_"
+        for ch in name
+    )
 
 
 def _upload_dir() -> Path:
@@ -308,7 +323,7 @@ async def api_upload_file(request: web.Request) -> web.Response:
                 )
             fname = part.filename or "upload"
             # Sanitize: strip path components to prevent traversal
-            safe_name = re.sub(r"[^\w.\-]", "_", Path(fname).name)
+            safe_name = _safe_upload_name(Path(fname).name)
             ext = Path(safe_name).suffix.lower()
             # A browser sends any length; past the file-system limit the open
             # below raises "File name too long" and the upload answers 500.
